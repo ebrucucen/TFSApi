@@ -1,77 +1,127 @@
-function Get-HelloWorld {   
-    param([string]$tfsServerUrl,
-          [PSObject[]]$BuildList)
-   
+function Get-Builds {    
+    param(  
+        [Parameter(Mandatory=$True)]
+        [ValidateNotNullOrEmpty()]
+        [string]$tfsUrl,
+        [Parameter(Mandatory=$True)]
+        [ValidateNotNullOrEmpty()]
+        [PSObject[]]$BuildList,
+        [Parameter(Mandatory=$True)]
+        [int]$hours=8
+        
+     )
+    
     [void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.Client")
     [void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.Build.Client")
     [void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.Build.Common")
     [void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.VersionControl.Client")
-    $Tfs = [Microsoft.TeamFoundation.Client.TeamFoundationServerFactory]::GetServer($tfsServerUrl)
+    
+    $Tfs = [Microsoft.TeamFoundation.Client.TeamFoundationServerFactory]::GetServer($tfsUrl)
     $VersionControlServer = $Tfs.GetService("Microsoft.TeamFoundation.VersionControl.Client.VersionControlServer")
     $BuildControlServer = $Tfs.GetService("Microsoft.TeamFoundation.Build.Client.IBuildServer")
- 
- 
+
+
     foreach ($build in $BuildList){
+    
         $TeamProject= $build.TeamProject
- 
+        
         foreach( $buildDefinitionName in $build.BuildNames){
-        $spec=$BuildControlServer.CreateBuildDetailSpec($TeamProject,$BuildDefinitionName)
-        $spec.InformationTypes=$null
-   
-        $MatchingBuilds = $BuildControlServer.QueryBuilds($Spec)
-        $Build =($MatchingBuilds.Builds) |where-object {$_.Status -in "Succeeded", "Failed", "PartiallySucceeded"}| Sort-Object  FinishTime -Descending | Select-Object -first 1
-        if($build -ne $null){
-            $errorMessage=""   
-            if (!($Build.status -eq "Succeeded")){
-                $errorMessage= [Microsoft.TeamFoundation.Build.Client.InformationNodeConverters]::GetBuildErrors($BuildControlServer.GetAllBuildDetails($Build.Uri)).Message
-                if($build.TestStatus -eq "Failed"){
-                #Todo:link the trx files...or add testmanager's testrun results...
-                $errorMessage="Tests failed. Check the test results "
-                }   
-            }
-            $obj=@()
-            $obj = new-object psobject -Property @{
-            TeamProject=$TeamProject
-            Name =$Build.BuildDefinition.Name
-            BuildNumber=$Build.BuildNumber
-            Status=$Build.Status
-            FinishTime=$Build.FinishTime
-            ErrorMessage=$ErrorMessage.Trim()
-            }
-            $global:objects+=$obj
-        }
- 
+            $spec=$BuildControlServer.CreateBuildDetailSpec($TeamProject,$BuildDefinitionName)
+            $spec.InformationTypes=$null
+            
+            $MatchingBuilds = $BuildControlServer.QueryBuilds($Spec)
+    
+#            $spec.minFinishTime=(get-date).AddHours(-8)
+            
+            $Builds =($MatchingBuilds.Builds) |where-object {($_.Status -in "InProgress", "Succeeded", "Failed", "PartiallySucceeded", "Stopped") -and ($_.StartTime -gt ((get-date).addhours($hours))) }
+            if ($Builds -eq $null) {$Builds=($MatchingBuilds.Builds) |where-object {($_.Status -in "InProgress", "Succeeded", "Failed", "PartiallySucceeded", "Stopped") }| Sort-Object StartTime -Descending |Select-Object -First 1}
+            
+            $Builds| Sort-Object  StartTime -Descending | % { 
+            if($_ -ne $null){
+                $errorMessage=""    
+                if (!($_.status -in ( "Succeeded", "InProgress" ))){
+                    $details=$BuildControlServer.GetAllBuildDetails($_.Uri)
+                    $errorMessage= if($_.TestStatus -eq "Failed"){
+                        #Todo: can link the trx files...
+
+                        "<a href='http://reportserver/$teamproject/$($_.BuildNumber)/TestReport.xml'>Tests failed. Check the test results</a>"
+                        }
+                        else{
+                        ([Microsoft.TeamFoundation.Build.Client.InformationNodeConverters]::GetBuildErrors($details)).Message |Out-String | %{
+                         if (!( $_ -eq $null)){
+                         $_.substring(0, (155, $_.length | Measure -Min).Minimum)}
+                         }
+                    } 
+                $obj=@()
+                $obj = new-object psobject -Property @{
+                    TeamProject=$TeamProject
+                    Name =$_.BuildDefinition.Name
+                    BuildNumber="<a href='$($_.LogLocation)'> $($_.BuildNumber) </a>"
+                    Status=$_.Status
+                    FinishTime=$_.FinishTime
+                    ErrorMessage=$ErrorMessage.Trim()
+                }
+                $global:objects+=$obj
+               }
+          }
       }
     }
 }
- 
- 
-[PSObject[]]$global:objects= @()
- 
-$fileName= Join-Path -Path "c:\temp\" ((get-date -format "yyMMddhhmmss") + ".txt")
-[PSObject[]]$BuildList=@()
- 
-$build=New-Object psobject -Property @{
-TeamProject="tp1"
-BuildNames=@("b1", "b2", "b3", "b4", "b5")}
-$BuildList+=$build
-
-$build=New-Object psobject -Property @{
-TeamProject="tp2"
-BuildNames=@("b1", "b2","b3" )
 }
-$BuildList+=$build
- 
-$build=New-Object psobject -Property @{
-TeamProject="tp3"
-BuildNames=@("b1", "b2","b3", "b4" )
+function Get-AllBuildNames{
+    $build=New-Object psobject -Property @{
+        TeamProject="abc"
+        BuildNames=@("build1", "build2", "build3", "build4", "build5", "build6","build7")}
+        $BuildList+=$build
+    return $BuildList
 }
-$BuildList+=$build
 
-$tfsServerUrl= "http://tfs:8080/tfs/DefaultCollection"
+function Write-Html {
+param (
+[string]$TfsUrl,
+[int]Hours)
+Begin{
 
-Get-HelloWorld $tfsServerUrl $BuildList
- 
-$Global:objects | Format-Table TeamProject, Name, BuildNumber, Status, FinishTime, ErrorMessage >>$fileName
- 
-notepad $fileName
+    [PSObject[]]$global:objects= @()
+
+    $fileName= Join-Path -Path "c:\buildsreports\" ((get-date -format "yyMMddhhmm") + ".htm") 
+    [PSObject[]]$BuildList=@()
+    
+    Get-AllBuildNames |  Get-Builds -tfsUrl $tfsUrl -BuildList $BuildList -Hours $Hours
+   
+   $css= '<style>
+   BODY{background-color:white; margin-left: 20px; font-family: calibri;}
+   TABLE{margin-left: 40px; border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;width: 100pc}
+   TH{border-width: 1px;padding: 3px;border-style: solid;border-color: black;background-color:#58ACFA}
+   TD{border-width: 1px;padding: 3px;border-style: solid;border-color: black;background-color:#FAFAFA}
+   UL {margin-left:70;margin-top:0;margin-bottom:10;}
+   LI UL {margin-left:20;margin-bottom:10}
+   .failed {color:red;}
+   .passed {color:green;}
+   </style>'
+
+   
+    Write-Verbose “HTML report will be saved $fileName” 
+}
+
+Process{ 
+
+    $Content= $Global:objects |  select-object TeamProject, Name, BuildNumber, Status, FinishTime, ErrorMessage |`
+    ConvertTo-Html -Fragment -As Table -PreContent “<h2>Builds</h2>” | Out-String
+
+    $Report=ConvertTo-Html -Title “TFS Builds ” -Head “<h1>Builds</h1><br>This report was ran: $(Get-Date)” -Body “$Content”
+    
+    }
+
+End{ 
+    #$Report | Out-File $fileName  ; 
+    Add-Type -AssemblyName System.Web
+    [System.Web.HttpUtility]::HtmlDecode($Report) | Out-File $fileName;
+    Invoke-Expression $FileName  
+    } 
+}
+#TFS Url to connect
+$tfsUrl= "http://tfs.com:8080/tfs"
+#Number of hours to check build start time
+$hours=6
+Write-HTML -tfsUrl $tfsUrl -Hours $hours
