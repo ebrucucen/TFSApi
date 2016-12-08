@@ -1,10 +1,11 @@
 function Get-VSVersions{
+[CmdletBing()]
 param ([PSCredential]$credential, 
 [psobject]$buildservers,
 [string]$VS2015VersionKey)
-cls
+BEGIN{}
+PROCESS{
 $buildobjectList =@()
-#Write-Output "Build ServerName | VS Version | Internet Connection |"
 $buildservers.BuildServerNames | % {$buildobject= Invoke-Command -ComputerName ($_+'.'+$($buildservers.domain)) -ScriptBlock {param($p1,$p2) 
   $version=(Get-ItemProperty $p2).version ; 
     $req= [net.Webrequest]::Create("http://google.com")
@@ -14,7 +15,8 @@ $buildservers.BuildServerNames | % {$buildobject= Invoke-Command -ComputerName (
 } -ArgumentList $_,$VS2015VersionKey  -Credential $Credential;
     $buildobjectout= new-object -TypeName PSObject -Property @{Name=$($buildobject.Name);VSVersion= $($buildobject.VSVersion);Internet=$($buildobject.Internet);PSVersion=$($buildobject.PSVersion)}
         $buildobjectList+=$buildobjectout
-}
+
+}}
  
 
 $mycomputer=$env:computername
@@ -28,7 +30,7 @@ $myreq= [net.Webrequest]::Create("http://google.com")
 $myconn=try{if(($myreq.getresponse()).statuscode -eq "OK"){ "Internet Connection on"} }catch{"No connection"}
 $myMachine= New-Object -TypeName PSObject -Property @{Name=$mycomputer;VSVersion=$myvsversion;Internet=$myconn;PSVersion=$mypsversion}
 $buildobjectList+=$myMachine
-
+END{
  $buildobjectList | Select Name, VSVersion, Internet, PSVersion| Format-Table -AutoSize
 
 Write-Output ""
@@ -36,6 +38,7 @@ Write-Output "Checked internet connection by creating httprequest to http://goog
 Write-Output "Checked VS Version by checking registry key $VS2015VersionKey"
 
 Write-Output "[$(Get-Date -Format 'dd/MM/yyyy hh:mm')] Script: $($MyInvocation.ScriptName)"
+}
 }
 
 function Get-MyCredentials{
